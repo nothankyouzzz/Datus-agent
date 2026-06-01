@@ -819,6 +819,7 @@ class TestGenerateWithMcpStream:
         ``<node>_response`` blocks.
         """
         from agents import RunContextWrapper
+
         from datus.schemas.action_history import ActionHistoryManager
 
         cfg = _make_model_config(use_native_api=True)
