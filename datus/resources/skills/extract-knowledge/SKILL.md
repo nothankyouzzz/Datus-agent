@@ -1,6 +1,6 @@
 ---
 name: extract-knowledge
-description: 从「问题 + gold_sql」配对中提炼最短的原子事实写入 ./knowledge/*.md；迭代驱动 gen_sql subagent 但永不暴露 gold 答案
+description: Mine shortest atomic facts from (question + gold_sql) pairs into ./knowledge/*.md; either by simulating SQL drafting (lite) or by driving the gen_sql subagent in blind iteration (deep)
 tags:
   - knowledge
   - sql
@@ -11,315 +11,314 @@ user_invocable: true
 disable_model_invocation: false
 ---
 
-# 从 Gold SQL 配对中提取业务知识
+# Extract Business Knowledge from Gold SQL Pairs
 
-你会收到一对或多对 `(question, gold_sql)`。对每一对你必须做以下事情：
+You receive one or more `(question, gold_sql)` pairs. For each pair you must:
 
-1. 驱动 `gen_sql` subagent 写出一段 SQL，让它的结果集与 `gold_sql` **完全一致**，**全程不向 subagent 展示 gold SQL 或 gold 结果的任何数值**。
-2. 当 subagent 的 SQL 最终匹配时，把它和 `gold_sql` 做 diff，找出 *业务知识差距*。
-3. 把差距过「值得写」判定后，以**最短的原子事实**写入 `./knowledge/<domain-slug>.md`，并更新 `./AGENTS.md` 中的 `## Knowledge` 索引。
+1. Produce a SQL candidate whose result set matches `gold_sql` **exactly** — either by simulating the drafting yourself (lite mode) or by driving a blind `gen_sql` subagent (deep mode). In deep mode, **never expose the gold SQL or any gold result values to the subagent**.
+2. Diff the candidate against `gold_sql` to surface the *business knowledge gap* — the rules, joins, filters, granularity, or business definitions that a generic SQL agent would not know.
+3. Filter the gap through the "worth-writing" test, then persist each surviving atom as the **shortest possible fact** into `./knowledge/<domain-slug>.md`, and refresh the `## Knowledge` index in `./AGENTS.md`.
 
-目标是 **最短能让 LLM 答对的描述**。匹配的 SQL 只是手段；提炼出可复用的原子事实才是交付物。
+The goal is **the shortest description that lets an LLM answer correctly**. Matching the SQL is only the means; reusable atomic facts are the deliverable.
 
-## 关键约束
+## Critical Rules
 
-- **绝不向 subagent 暴露 `gold_sql`**。完整 SQL 不行、片段不行、结果具体数值不行、列级数据也不行。subagent 必须保持"盲态"，它的错误才能揭示出缺失了什么知识。
-- **绝不对 subagent 引用 gold 的具体数值**。补充提示只能描述 *症状* 和 *定性方向*。
-- 跨重试时必须通过 `task` 工具复用 subagent 的 `session_id` —— 这是 subagent 记住先前尝试的唯一方式。
+- **Never expose `gold_sql` to the subagent.** Not the full SQL, not snippets, not concrete result values, not column-level data. The subagent must stay "blind" — only then do its mistakes reveal what knowledge is missing.
+- **Never quote gold's concrete values when talking to the subagent.** Follow-up prompts may only describe *symptoms* and *qualitative directions*.
+- Across retries, always reuse the subagent's `session_id` via the `task` tool — that's the only way the subagent remembers prior attempts.
 
-## 输入
+## Input
 
-按以下优先级解析配对源（找到第一个可用的就用，不要继续往下找）：
+Resolve the pair source in this priority order (use the first one that works, do not keep looking):
 
-1. **用户当前消息显式提供** —— 单对或多对（列表、CSV 文件路径、YAML/JSON）。
-2. **当前消息附带的文件 / 路径** —— 若用户给的是文件路径，先 `read_file` 再解析。
-3. **从最近对话上下文回溯** —— 用户直接调用 `/extract-knowledge` 而没有显式给配对时：
-   - 从最新一条消息往回扫描，找到最近一段被用户认可的 `(问题, SQL)` —— 即 user 的数据问题 + assistant 给出并被用户继续追问 / 采纳 / 没有否定的最终 SQL。
-   - 把"用户最初的问题"作为 `question`，把"最终采用的 SQL"作为 `gold_sql`。
-   - 找到后用 `ask_user` 给出回溯到的 `question` 与 `gold_sql` 前缀让用户确认，**不要静默开跑**。
+1. **Explicitly supplied in the current user message** — single pair, or multiple (list, CSV file path, YAML/JSON).
+2. **Files / paths attached to the current message** — if the user passes a path, `read_file` first, then parse.
+3. **Recovered from recent conversation context** — when the user invokes `/extract-knowledge` without explicit pairs:
+   - Scan backward from the latest message and locate the most recent user-approved `(question, SQL)` — i.e. a data question the user asked, followed by an assistant SQL the user continued to refine, accepted, or did not reject.
+   - Use the user's original question as `question`, and the final adopted SQL as `gold_sql`.
+   - **Confirm via `ask_user`** by showing the recovered `question` and a prefix of `gold_sql`. **Do not run silently** — context recovery has ambiguity risk (you may have latched onto an intermediate draft).
 
-若以上都解析不到清晰的 `(问题, SQL)`，调用 `ask_user` 让用户提供。
+If none of the above yields a clear `(question, SQL)`, call `ask_user` to request the pair from the user.
 
-## 模式选择（lite / deep）
+## Mode Selection (lite / deep)
 
-确定输入后、进入工作流前，决定本次提炼用哪种模式：
+Once the input is resolved, decide which mode to run before entering the workflow:
 
-- **lite（默认）** —— 不调用 `gen_sql` subagent，由主 agent 自己模拟"看到 question + 当前 datasource schema 会怎么写 SQL"，把脑中草稿与 `gold_sql` 做 diff，直接提炼 gap。**优点**：快、零 subagent 调用、单轮即出结果。**代价**：缺少独立盲态生成器的客观验证，依赖主 agent 的"假装不知道答案"的自律性。
-- **deep** —— 完整流程，真正驱动 `gen_sql` subagent 多轮迭代直至结果匹配（≤5 轮），从最终 diff 提炼 gap。**优点**：盲态生成器提供客观验证、迭代过程能逼出更细的边界 fact。**代价**：消耗 subagent token、需多轮 `read_query` 执行。
+- **lite (default)** — do not call the `gen_sql` subagent. The main agent itself simulates "given this question + the current datasource schema, how would I draft the SQL," diffs that mental draft against `gold_sql`, and mines the gap directly. **Pros:** fast, zero subagent calls, single-pass. **Cons:** no independent blind-generator validation; depends on the main agent's discipline to "pretend not to know the answer."
+- **deep** — full pipeline. Drive the `gen_sql` subagent through multi-round blind iteration (≤5 rounds) until result match, then mine facts from the final diff. **Pros:** independent blind validator, iteration surfaces finer-grained boundary facts. **Cons:** consumes subagent tokens, requires multiple `read_query` executions.
 
-**决策规则：**
-1. 当 `ask_user` 工具可用时，用一次 `ask_user` 让用户在 lite / deep 之间选，附上一句话差异说明，默认建议 = lite。
-2. 当 `ask_user` 不可用（agent 无该工具或运行在非交互上下文）时，**默认走 lite**，并在最终输出里注明"默认 lite，如需更严格验证请重新调用并选 deep"。
+**Decision rule:**
+1. When the `ask_user` tool is available, call it once and ask the user to choose lite or deep; include the one-line tradeoff. Default suggestion = lite.
+2. When `ask_user` is unavailable (no such tool, or running non-interactively), **default to lite** and note in the final output: "defaulted to lite; rerun and choose deep for stricter validation."
 
-记下选中的模式 `mode`，决定下一步走哪个工作流分支。
+Record the chosen `mode` and route to the right workflow branch.
 
-## 工作流（每对一次）
+## Workflow (one pair at a time)
 
-### 第 1 步 — 校验 gold_sql（两种模式都做）
+### Step 1 — Validate `gold_sql` (both modes)
 
-用 `read_query(sql=<gold_sql>)` 执行 `gold_sql`。
-- 若报错：把错误告知用户并 **跳过此对**。不要为损坏的 gold 编造问题。
-- 否则：缓存结果（行数、列名、小段预览）。把它作为后续比对的事实基准。
+Run `read_query(sql=<gold_sql>)`.
+- If it errors: report to the user and **skip this pair**. Do not invent questions to salvage a broken gold.
+- Otherwise: cache the result (row count, column names, small preview). This is the factual baseline for later comparison.
 
-### 第 2–4 步（lite 模式） — 主 agent 模拟生成并对照
+### Steps 2–4 (lite mode) — Main agent simulates and diffs
 
-只有 `mode = lite` 时走本分支，跳过 deep 分支。
+Take this branch only when `mode = lite`; skip the deep branch entirely.
 
-1. **暂时屏蔽 gold_sql** —— 在脑中切换到"只知道 question + 当前 datasource schema"的假设状态。**不要** 让 gold_sql 的具体写法影响这一步的草稿。
-2. **写一段草稿 SQL**（不需要 `read_query` 执行，只作为对比基线）—— 这就是一个不熟悉本项目业务约定的 SQL agent 在该 schema 下"会写出的版本"。
-3. **逐项 diff 草稿 vs gold_sql** —— 关注差异维度：
-   - 表选择 / 表别名 / 缺少的映射表
-   - join 类型与连接键
-   - WHERE 过滤项（尤其是常量过滤、状态码、租户/平台过滤）
-   - 分组粒度、聚合函数、去重方式
-   - 输出列、列顺序、列别名
-   - 边界条件、严格 / 非严格不等号
-   - 业务术语与字段的对应（如"活跃" / "留存"对应哪个字段表达式）
-4. **把每条差异作为候选 fact** 进入第 5 步「值得写」判定。
+1. **Temporarily ignore `gold_sql`.** Mentally switch to a state where you only know `question` + the current datasource schema. **Do not** let the specific shape of `gold_sql` influence this draft.
+2. **Write a draft SQL** (no need to `read_query`-execute it; the draft is only a comparison baseline) — this is the version a SQL agent unfamiliar with this project's business conventions would produce given that schema.
+3. **Diff the draft against `gold_sql` along these axes:**
+   - Table choice, table aliases, missing mapping tables
+   - Join type and join keys
+   - WHERE filters (especially constant filters, status codes, tenant / platform predicates)
+   - Group-by granularity, aggregate functions, deduplication strategy
+   - Output columns, column order, column aliases
+   - Boundary conditions, strict vs non-strict inequalities
+   - Business-term-to-field mapping (e.g. which expression encodes "active" / "retained")
+4. **Treat each diff item as a candidate fact** and pass it into Step 5's "worth-writing" filter.
 
-lite 模式下没有"匹配 / 不匹配"判定 —— 直接由 diff 项驱动提炼。lite 模式不进入第 5 步的"5 轮耗尽"分支，也不写 Open Gaps（因为没有迭代过程）。
+There is no match / mismatch verdict in lite mode — diff items drive extraction directly. Lite mode does not enter the "5-round exhaustion" branch and does not write Open Gaps (no iteration history exists).
 
-### 第 2 步（deep 模式） — 首轮调用 subagent
+### Step 2 (deep mode) — First subagent call
 
-只有 `mode = deep` 时走本分支与之后第 3、4 步。
+Take this branch only when `mode = deep` and continue with Steps 3 and 4 below.
 
-调用：
+Invoke:
 
 ```
 task(
   type="gen_sql",
-  prompt=<question>,         # 只传自然语言问题
-  description="extract-knowledge: initial attempt for <短主题>"
+  prompt=<question>,         # natural-language question only
+  description="extract-knowledge: initial attempt for <short topic>"
 )
 ```
 
-返回的 envelope 含 `result.sql`（长 SQL 时是 `result.sql_file_path`）、`result.response` 和 `result.session_id`。**保存 `session_id`** —— 后续每次重试都必须复用它。
+The returned envelope contains `result.sql` (or `result.sql_file_path` for long SQL), `result.response`, and `result.session_id`. **Save the `session_id`** — every later retry must reuse it.
 
-### 第 3 步（deep 模式） — 执行并比对
+### Step 3 (deep mode) — Execute and compare
 
-用 `read_query` 执行 subagent 产出的 SQL。与缓存的 gold 结果做以下比对：
+Run the subagent's SQL via `read_query` and compare against the cached gold result:
 
-- 行数是否匹配
-- 列名 / 列数是否在语义级别匹配（别名可不同）
-- 按同一 key 排序后样本行是否匹配
-- 需要精确判定时用 `read_query` 跑差集探针（双向 `EXCEPT`、关键列 `SUM` / `COUNT(DISTINCT ...)` 一致性校验等）
+- Row count match?
+- Column names / count match at the semantic level (aliases may differ)?
+- After sorting both sides by the same key, do sampled rows match?
+- For precise verdicts, use `read_query` to run difference probes (two-way `EXCEPT`, key-column `SUM` / `COUNT(DISTINCT ...)` consistency checks, etc.)
 
-判定结论：**匹配** 或 **不匹配**。
+Verdict: **match** or **mismatch**.
 
-### 第 4 步（deep 模式） — 不匹配：诊断并复用 session 重试
+### Step 4 (deep mode) — Mismatch: diagnose and retry on the same session
 
-定性分析差异。常见症状 → 可能缺失的知识：
+Diagnose qualitatively. Common symptoms → likely missing knowledge:
 
-| 症状 | 可能缺失的知识 |
-|------|----------------|
-| 行数偏多 | 缺过滤、缺 join、粒度错 |
-| 行数偏少 | 多余过滤、join 条件过严 |
-| 聚合值偏差 | 度量列错、缺去重、单位错 |
-| 多列 / 少列 | 输出形状不符、投影规则缺失 |
-| 时间分组不同 | 粒度 / 业务日历 / 财年规则 |
-| 出现不该有的 NULL | join 类型错（LEFT vs INNER）、缺 COALESCE 规则 |
+| Symptom | Likely missing knowledge |
+|---------|--------------------------|
+| Too many rows | Missing filter, missing join, wrong granularity |
+| Too few rows | Extra filter, join condition too strict |
+| Aggregate value off | Wrong measure column, missing dedup, wrong unit |
+| Extra / missing columns | Output shape mismatch, projection rule missing |
+| Time bucketing differs | Granularity / business calendar / fiscal-year rule |
+| Unexpected NULLs | Wrong join type (LEFT vs INNER), missing COALESCE rule |
 
-设计补充提示时遵守：
+When designing the follow-up prompt, obey:
 
-- 只描述症状和方向，绝不带 gold 数值、绝不把 gold SQL 的写法直接告诉 subagent。
-- **提示的「方向」部分应当就是未来 knowledge fact 的草稿**。即写提示时已经在脑中按「值得写」判定筛过：你点给 subagent 的每一条业务规则 / 必加过滤 / 字段陷阱，都应当能在第 5 步原样转写为 knowledge fact（只把祈使语气改成陈述语气）。
-- 这样做的收益：提示更短聚焦；第 5 步几乎零成本（从 prompt 历史挑出已被验证的方向，去掉祈使语气即可写入文件）；提示与 knowledge 内容不割裂。
-- 避免散弹枪式猜测（"也许 join 不对？也许聚合？也许空值？"）—— 无法转写为任何 fact，浪费 token。
+- Describe symptoms and direction only. Never leak gold values. Never restate gold SQL's exact wording to the subagent.
+- **The "direction" portion of your prompt should already read like a draft of the future knowledge fact.** I.e. when you write the prompt you have mentally passed it through the "worth-writing" filter: every business rule / mandatory filter / field trap you point the subagent at must be transcribable as a knowledge fact in Step 5 by simply switching from imperative to declarative voice. Benefits: prompts are shorter and more focused; Step 5 becomes near-zero-cost (cherry-pick validated directions from prompt history, strip imperative voice, write to file); prompts and knowledge content stay aligned.
+- Avoid shotgun guessing ("maybe the join is wrong? or the aggregation? or null handling?") — such prompts cannot be transcribed into any fact and waste tokens.
 
-然后调用：
+Then call:
 
 ```
 task(
   type="gen_sql",
-  session_id=<已保存的 session_id>,    # 必须是上一轮的同一个 id
-  prompt=<仅含提示>,
+  session_id=<saved session_id>,    # must be the previous round's id
+  prompt=<hint only>,
   description="extract-knowledge: refine #<n>"
 )
 ```
 
-循环 第 3 步 → 第 4 步，**最多 5 轮（含首轮）**。5 轮后仍不匹配：停止重试，但 **不要丢弃过程信息** —— 把已经确认的知识 gap（每轮 subagent 修对的部分、你在补充提示中已经定位到的业务规则 / 字段陷阱 / 必加过滤等）按第 5 步流程提炼并写入，再按第 7 步登记 Open Gaps 记下尚未对齐的剩余差异。
+Loop Step 3 → Step 4 for **at most 5 rounds (including the first)**. If still mismatched after round 5: stop retrying, but **do not discard the process information** — promote every confirmed knowledge gap (the rules the subagent finally got right each round, the business rules / field traps / mandatory filters you've already pinpointed in follow-up prompts) into facts via Step 5, then log the remaining un-aligned differences in Open Gaps via Step 7.
 
-## 「值得写」判定（第 5 步之前必读）
+## "Worth-Writing" Test (read before Step 5)
 
-对每个候选 diff 项依次问 4 个问题，**任何一个回答"是"就丢弃，不写入**：
+For every candidate diff item, ask these 4 questions in order. **If any answer is "yes," drop it.**
 
-1. 没有这条知识时，给定 question + schema 的 SQL agent 是否仍能写对？
-2. 这条信息能从 `INFORMATION_SCHEMA` / 表注释 / 列名直接推断？
-3. 这是通用 SQL 知识（不是该业务/数据集特有）？
-4. **这条 fact 能由本文件其它已写的 fact「机械组合」得到？**（若两条已有 fact 一拼即得，组合结果就是派生，不写。）
+1. Without this knowledge, could a SQL agent with the question + schema still get it right?
+2. Can this information be inferred directly from `INFORMATION_SCHEMA` / table comments / column names?
+3. Is this generic SQL knowledge (not specific to this business / dataset)?
+4. **Can this fact be mechanically composed from other facts already in the file?** (If two existing facts combine to produce it, the combination is derivative — do not write it.)
 
-**只记录原子事实** —— 其它都视为派生，不写。值得写的常见原子范畴：
+**Record atomic facts only** — anything else counts as derivative and is not written. Common atomic categories worth writing:
 
-- **字段编码** —— 位图位含义、enum 映射、状态码、特殊值的语义
-- **业务口径定义** —— 业务术语对应的判定标准
-- **必加固定过滤** —— 缺则结果错的常量过滤
-- **边界陷阱** —— 严格不等号、区间端点开闭
-- **表间隐式连接** —— 必须经映射表、禁止直接 join 的关系
-- **同名字段口径差异** —— 同一字段在不同上下文语义不同
-- **必要的查询时机/参数约束** —— 业务规定的固定参数
+- **Field encoding** — bit-position meanings, enum mappings, status codes, special-value semantics
+- **Business measure definitions** — the criteria behind business terms
+- **Mandatory constant filters** — constant predicates whose omission corrupts results
+- **Boundary traps** — strict inequalities, interval endpoint open/closed conventions
+- **Implicit table joins** — relationships that must go through a mapping table; direct joins forbidden
+- **Same-name field divergence** — the same field name has different semantics in different contexts
+- **Required timing / parameter constraints** — business-mandated fixed parameters
 
-**关键自检**：写完一组 fact 后回看，能否删掉一条仍让 LLM 答对？能则该条就是派生，删掉。
+**Self-check:** after writing a group of facts, look back — can you drop any single one and still let the LLM answer correctly? If yes, that one was derivative. Drop it.
 
-### 第 5 步 — 提炼原子事实（两种模式都做）
+### Step 5 — Mine atomic facts (both modes)
 
-**触发条件：**
-- **lite 模式**：完成第 2–4 步（lite）的草稿 vs gold_sql diff 后立即进入。
-- **deep 模式**：结果匹配 *或* 5 轮重试耗尽。两种情况都要走本步骤 —— 部分对齐过程中已经定位的知识 gap 同样有价值。
+**Trigger:**
+- **lite mode** — enter immediately after Steps 2–4 (lite) produce the draft-vs-`gold_sql` diff.
+- **deep mode** — match achieved *or* 5 rounds exhausted. Both cases enter — partial-alignment progress still carries knowledge value.
 
-**lite 模式：** 把第 2–4 步（lite）产出的所有 diff 项作为候选 fact。
-**deep 模式：** 把 subagent 的最终 SQL 与 `gold_sql` 做 diff（再与 subagent *首轮* 的尝试做 diff —— 中间过程本身就是信息）。失败场景下额外回顾每轮你向 subagent 发出的补充提示，那些"已经定性指出的方向"本身就是已确认的 fact 来源。
+**lite mode:** every diff item from Steps 2–4 (lite) is a candidate fact.
+**deep mode:** diff the subagent's final SQL against `gold_sql` (also against the subagent's *first* attempt — the middle is informative). On failure, additionally walk through every follow-up prompt you sent; the "directions you've already qualitatively named" are confirmed fact sources.
 
-对每个 diff 项过一遍上面的「值得写」判定，通过的才产出为一个 fact。
+Pass every candidate through the "worth-writing" test. Only survivors become facts.
 
-每个 fact 只包含：
+Each fact contains only:
 
-- `statement` —— 一句陈述事实本身，**不解释"为什么重要"**。关键警告（边界值、易错点）作 inline 括号标注。
-- `example`（可选）—— **仅当一句话陈述无法消除歧义时**才附 1 段最小 SQL 片段。
+- `statement` — one sentence stating the fact itself. **Do not explain "why it matters."** Critical warnings (boundary values, easy-to-miss traps) go in inline parenthetical notes.
+- `example` (optional) — **only when the one-sentence statement cannot remove ambiguity** by itself; then attach a minimal SQL snippet.
 
-**严禁**：
-- 用 SQL 重述规则本身（陈述句已说清的边界条件，不要再贴一段把它翻译成 `WHERE` 子句的 SQL）
-- 写"不遵守会出错"这类废话作为单独字段
-- 把可由其它 fact 机械组合得到的内容当独立 fact 写
+**Forbidden:**
+- Restating the rule in SQL (don't say "use `> 7`, not `>= 7`" and then paste a `WHERE x > 7` snippet)
+- Writing "violating this would be wrong" as a standalone field — pure filler
+- Writing as a standalone fact anything that mechanically composes from other facts
 
-### 知识文件组织模型
+### Knowledge File Layout
 
 ```
 business domain   →   topic   →   facts
-   (单个 .md)         (## 标题)    (列表项 / 表格行 / 段落 / 可选 ### 子块)
+   (one .md)         (## heading)   (list items / table rows / paragraphs / optional ### subblock)
 ```
 
-- **业务域 = 一个文件** —— 规则会自然一起演进的一片大业务范围。路径 `./knowledge/<domain-slug>.md`。宁可少而宽，不要多而窄。
-- **主题（##）= 一组共享上下文的 fact** —— 通常 = 一张表的约束、一组口径定义、一组同领域映射。
-- **fact 承载形式按以下优先级选择**：
-  1. **无序列表项** —— 同主题下多条独立 fact（最常用）
-  2. **表格行** —— 多个并列字段 / 枚举 / 分支映射
-  3. **段落** —— 一两句话能讲清的概念性事实
-  4. **`### <一句话规则>` 子块** —— 仅在需要附 SQL 示例时
+- **Business domain = one file** — a slice of business broad enough that its rules co-evolve. Path: `./knowledge/<domain-slug>.md`. Prefer fewer, wider domains over many narrow ones.
+- **Topic (`##`) = a group of facts sharing context** — typically the constraints of one table, a set of measure definitions, or a related mapping group.
+- **Fact representation, in priority order:**
+  1. **Bulleted list item** — multiple independent facts under the same topic (most common)
+  2. **Table row** — several parallel field / enum / branch mappings
+  3. **Paragraph** — a conceptual fact a sentence or two can explain
+  4. **`### <one-sentence rule>` subblock** — only when a SQL example must be attached
 
-**硬约束：**
-- 主题块内必须有 ≥2 条独立 fact（否则合并到更宽的主题）
-- 嵌套层级不超过 `###`
-- 不写 `Derived from` / `Why it matters` / `When it applies` 这类标签字段
-- 文件内不出现任何 question 文本（依赖 git history 追溯）
-- **强偏好：先复用，后新建**。持久化前先列 `./knowledge/` 并读每个文件的 Domain 引言，优先在已有业务域里加新主题 / 新 fact，而不是新开文件
+**Hard constraints:**
+- A topic block must hold ≥2 independent facts (otherwise merge into a wider topic)
+- Heading depth never exceeds `###`
+- Do not write `Derived from` / `Why it matters` / `When it applies` label fields
+- The file must contain no question text (trace via git history instead)
+- **Strong preference: reuse first, create new last.** Before persisting anything, list `./knowledge/` and read each file's Domain intro. Prefer adding a new topic or fact under an existing domain over opening a new file.
 
-**新业务域文件模板：**
+**Template for a new business-domain file:**
 
 ```markdown
-# <业务域标题>
+# <Domain Title>
 
-> **Domain:** <一句话范围说明 —— 本文件覆盖什么、不覆盖什么>。
+> **Domain:** <one-sentence scope statement — what this file covers, what it doesn't>.
 
-## <主题标题>
+## <Topic Title>
 
-<可选：1–2 句引言说明该主题涵盖什么>
+<optional 1–2 sentence intro describing what this topic covers>
 
 - fact 1
-- fact 2（注意 ...）
+- fact 2 (note ...)
 
-| 字段 / 分支 | 取值 / 判定 |
-|------------|-------------|
+| Field / Branch | Value / Verdict |
+|---------------|-----------------|
 | ... | ... |
 
-### <需要 SQL 示例的规则>
+### <rule that needs a SQL example>
 
-<一句话陈述，可带 inline 警告>
+<one-sentence statement, may carry an inline warning>
 
 \`\`\`sql
-<最小消除歧义的代码片段>
+<minimal snippet that resolves ambiguity>
 \`\`\`
 ```
 
-### 第 6 步 — 持久化（fact 级去重 / 冲突门禁）
+### Step 6 — Persist (fact-level dedup / conflict gates)
 
-对每个已归类的 fact，**按顺序** 走以下门禁。不可跳步。
+For every classified fact, walk the gates **in order**. Do not skip steps.
 
-#### 6.1 解析目标业务域文件
+#### 6.1 Resolve target domain file
 
-- 若 `./knowledge/` 尚不存在，直接 `write_file` 创建第一个文件（空目录情形无需 `ask_user`）。
-- 若该 fact 不归属任何已有业务域，在创建新文件 **之前** 必须 `ask_user`：列出已有业务域、给出建议的新 slug、允许用户选复用 / 新建 / 自定义。
-- 当存在合理的复用路径时，绝不静默新建文件。
+- If `./knowledge/` does not yet exist, just `write_file` the first file (no `ask_user` needed for an empty-directory case).
+- If the fact does not belong to any existing domain, **before** creating a new file you must `ask_user`: list existing domains, propose a new slug, let the user choose reuse / new / custom.
+- Never silently open a new file when a reasonable reuse path exists.
 
-#### 6.2 在该文件内检测重复与冲突
+#### 6.2 Detect duplicates and conflicts inside the file
 
-`read_file` 目标文件，按主题抽取已有 fact 清单（列表项 + 表格行 + 段落事实 + ### 子块标题）。与候选 fact 按 **语义**（非字符串）逐条对比：
+`read_file` the target. Extract existing facts per topic (list items + table rows + paragraph facts + ### subblock headings). Compare each candidate against existing facts **semantically** (not by string):
 
-| 结果类型 | 定义 | 处理动作 |
-|---------|------|----------|
-| **重复 (Duplicate)** | fact 相同、范围相同、方向相同。 | **静默跳过**（幂等）。在最终报告中记录此条。 |
-| **细化 (Refinement)** | 已有 fact 是新 fact 的严格子集（精度更低、缺一个条件、范围更窄）。 | **`ask_user`**：替换 / 合并 / 都保留并加范围限定。默认建议 = 合并。 |
-| **冲突 (Conflict)** | 范围相同但方向相反 / 互相矛盾。 | **强制 `ask_user`**。把两条 fact 并排展示。选项：保留旧的 / 用新的替换 / 两者保留并加明确条件门控（你必须说清条件是什么）。**绝不静默解决冲突。** |
-| **互补 (Complementary)** | 同主题、不同侧面。 | 在同主题下 **追加** 一条同形态 fact（列表项 / 表格行 / 段落）。 |
-| **派生 (Derivable)** | 候选 fact 能由已有 fact 机械组合得到。 | **丢弃，不写入**。「值得写」判定第 4 条已经在前置阶段过滤，这里是兜底。 |
-| **新主题 / 新业务域** | 没有相关的已有主题。 | 按 6.3 新建标题。 |
+| Outcome | Definition | Action |
+|---------|-----------|--------|
+| **Duplicate** | Same fact, same scope, same direction. | **Silent skip** (idempotent). Record in final report. |
+| **Refinement** | Existing fact is a strict subset of the new one (lower precision, missing a condition, narrower scope). | **`ask_user`**: replace / merge / keep both with a scope qualifier. Default suggestion = merge. |
+| **Conflict** | Same scope, opposite direction / mutually contradictory. | **`ask_user` is mandatory**. Show both side-by-side. Options: keep old / replace with new / keep both with an explicit conditional gate (you must spell out the condition). **Never resolve a conflict silently.** |
+| **Complementary** | Same topic, different facet. | **Append** a same-form fact under the same topic (list item / table row / paragraph). |
+| **Derivable** | The candidate mechanically composes from existing facts. | **Drop, do not write**. The "worth-writing" test (question 4) is supposed to catch this earlier — this is a safety net. |
+| **New topic / new domain** | No relevant existing topic. | Create the heading via 6.3. |
 
-#### 6.3 写入或编辑文件
+#### 6.3 Write or edit the file
 
-- 优先用 `edit_file` 保持最小 diff。
-- 当新 fact 加入后，该主题的承载形式应当变化时，**允许整块重写该主题**（仅动该主题块），避免持续追加导致冗余。
-- 标题约定：
-  - 新业务域 → `write_file` 写入 Domain 引言段，紧跟首个主题标题
-  - 新顶层主题 → 插入一个 `## <主题标题>` 块
-  - 新 fact 进已有主题 → 追加为列表项 / 表格行 / 段落；仅在需要 SQL 示例时才追加 `### <一句话规则>` 子块
+- Prefer `edit_file` for minimum diff.
+- When a new fact changes the appropriate representation of an existing topic, **whole-block rewriting that topic is allowed** (only touch that block); avoid letting persistent append accumulate redundancy.
+- Heading conventions:
+  - New domain → `write_file` the Domain intro followed by the first topic heading
+  - New top-level topic → insert a `## <topic title>` block
+  - New fact into existing topic → append as list item / table row / paragraph; only add a `### <one-sentence rule>` subblock when a SQL example is needed
 
-**不要** 在 fact 之间插入 `---` 分隔线 —— markdown 标题/列表本身就构成分隔。
+**Do not** insert `---` separators between facts — markdown headings / lists already separate them, and `---` makes `edit_file` insertion points ambiguous.
 
-### 第 7 步 — 更新 AGENTS.md 索引
+### Step 7 — Update the AGENTS.md index
 
-维护 `./AGENTS.md` 中的 `## Knowledge` 章节，让以后处理相关业务域问题的主 agent 能从 AGENTS.md 入口查到 knowledge/ 里有什么、按需 `read_file` 对应业务域文件作为上下文。
+Maintain the `## Knowledge` section of `./AGENTS.md`, so that later main agents handling related business-domain tasks can enter from AGENTS.md, see what `knowledge/` holds, and `read_file` the relevant domain file as context.
 
-**AGENTS.md 处理顺序：**
+**AGENTS.md handling order:**
 
-1. **`./AGENTS.md` 不存在** → `write_file` 创建最小骨架（仅含 `# <项目目录名>` 标题 + `## Knowledge` 章节，其余章节留给 `/init` 后续填充），不要等用户先跑 `/init`。
-2. **AGENTS.md 存在但缺 `## Knowledge` 章节** → 插入到 `## Artifacts` 之后（若 Artifacts 也没有，就插到文件末尾）。
-3. **重扫 `./knowledge/`**，按业务域标题字母序 **重写整个 `## Knowledge` 章节**，保证每次运行后索引一致。
+1. **`./AGENTS.md` missing** → `write_file` a minimal skeleton (just `# <project directory name>` + the `## Knowledge` section; leave the rest for `/init` to fill in later). Do not wait for the user to run `/init` first.
+2. **AGENTS.md exists but lacks the `## Knowledge` section** → insert after `## Artifacts` (or at end of file if Artifacts is also absent).
+3. **Rescan `./knowledge/`** and **rewrite the entire `## Knowledge` section** sorted alphabetically by domain title — guarantees the index stays consistent across runs.
 
-**`## Knowledge` 章节的固定结构：**
+**Fixed structure of the `## Knowledge` section:**
 
 ```markdown
 ## Knowledge
 
-`./knowledge/` 收录该项目的业务原子事实，按业务域分文件维护（由 `/extract-knowledge` 提炼）。
-处理涉及对应业务域的问题前，先 `read_file` 相关文件作为上下文。
+`./knowledge/` holds this project's atomic business facts, organized per business domain (maintained by `/extract-knowledge`).
+Before handling a task that touches a domain, `read_file` the corresponding file for context.
 
-- [<业务域标题 A>](knowledge/<domain-slug-a>.md) — <一句话范围说明>
-- [<业务域标题 B>](knowledge/<domain-slug-b>.md) — <一句话范围说明>
+- [<Domain Title A>](knowledge/<domain-slug-a>.md) — <one-sentence scope>
+- [<Domain Title B>](knowledge/<domain-slug-b>.md) — <one-sentence scope>
 
 ### Open Gaps
 
-- <问题简述> — <剩余无法对齐的差异简述>
+- <question summary> — <remaining un-aligned difference>
 ```
 
-- 索引一行 = 一个业务域文件（不是每个主题、不是每条 fact），范围说明从该文件 `> Domain:` 引言段取。
-- `./knowledge/` 为空时，省略索引列表与 `### Open Gaps`，只保留章节引导段。
-- `### Open Gaps` 子节没有条目时整段省略，有条目时按业务域归组列出。
+- One index line = one business-domain file (not per topic, not per fact). Scope sentence comes from that file's `> Domain:` intro.
+- When `./knowledge/` is empty, omit the index list and `### Open Gaps`; keep only the section intro paragraph.
+- `### Open Gaps` omits entirely when there are no entries; when present, group by domain.
 
-**5 轮后仍未匹配的处理（仅 deep 模式）：** 先把第 5–6 步已经写入的 fact 留在对应业务域文件中，再在 `### Open Gaps` 子节追加一行 `- <问题简述> — <剩余无法对齐的差异简述>`，然后继续处理下一对。lite 模式没有迭代过程，不写 Open Gaps。
+**5-round mismatch handling (deep mode only):** keep the facts Step 5–6 already wrote in their domain files, then append a line `- <question summary> — <remaining un-aligned difference>` under `### Open Gaps`, and continue with the next pair. Lite mode has no iteration history and does not write Open Gaps.
 
-## 最终输出
+## Final Output
 
-直接返回一段人类可读的总结，覆盖：本次用的模式（lite / deep）、处理了几对、几对匹配 / 失败（deep）或对齐完成（lite）、写入 / 编辑了哪些 `knowledge/*.md` 文件、新增了多少条 fact、有无冲突需要后续关注。lite 模式下因 `ask_user` 不可用而默认走 lite 时，补一句"如需更严格验证请重新调用并选 deep"。**不要返回 JSON envelope。**
+Return a single human-readable summary covering: the mode used (lite / deep); how many pairs were processed; how many matched / failed (deep) or were aligned (lite); which `knowledge/*.md` files were created / edited; how many facts were added; any conflicts still needing attention. When lite was used because `ask_user` was unavailable, add one line: "defaulted to lite; rerun and choose deep for stricter validation." **Do not return a JSON envelope.**
 
-## 你会用到的工具
+## Tools You'll Use
 
-- `read_query(sql=...)` —— 执行 gold 的 SQL、跑差集探针（deep 模式还会执行 subagent SQL）。lite 模式仅用于第 1 步校验 gold。
-- `task(type="gen_sql", prompt=..., session_id=...)` —— **仅 deep 模式** 用，委派 SQL 生成、跨重试复用 session。
-- `read_file`、`write_file`、`edit_file` —— 管理 `./knowledge/*.md` 与 `./AGENTS.md`。变更目标业务域文件前 **总是** 先 `read_file`（6.2 依赖这点）。
-- `ask_user` —— 以下情况必须用：输入解析有歧义、对话回溯命中的配对需用户确认、模式选择（lite / deep）、新业务域确认（6.1）、fact 细化决策（6.2）、**所有 fact 冲突**（6.2）。措辞要用具体编号选项。
+- `read_query(sql=...)` — execute gold SQL and difference probes (deep mode additionally executes subagent SQL). In lite mode it is only used for Step 1's gold validation.
+- `task(type="gen_sql", prompt=..., session_id=...)` — **deep mode only**; delegate SQL generation, reuse session across retries.
+- `read_file`, `write_file`, `edit_file` — manage `./knowledge/*.md` and `./AGENTS.md`. **Always** `read_file` the target domain file before edits (6.2 depends on it).
+- `ask_user` — required for: ambiguous input parsing; confirming a context-recovered pair; mode selection (lite / deep); new-domain confirmation (6.1); refinement decisions (6.2); **every fact conflict** (6.2). Phrase questions with numbered options.
 
-## 禁止事项
+## Forbidden
 
-- lite 模式下不要调用 `task(type="gen_sql", ...)` —— 模式选择已经声明不走 subagent。
-- deep 模式下，在确认 `gold_sql` 能跑通之前不要调用 `task(type="gen_sql", ...)`。
-- deep 模式下不要为重试新开 `gen_sql` session —— 必须传上一轮的 `session_id`。
-- 不要替用户的问题自己写 SQL —— 那是 subagent 的活。你的角色是编排者与知识策展人。
-- 不要把 gold SQL 写进 `./knowledge/*.md`。知识是从差距中提炼出的 *原子事实*，不是答案本身。
-- 不要写任何派生 fact —— 凡是能由其它 fact 机械组合得到的内容一律丢弃。
-- 不要写 `Derived from` / `Why it matters` / `When it applies` 这类标签字段；不要在文件中出现任何 question 文本。
-- 不要为每条 fact 都附 SQL 示例 —— 只有一句话陈述无法消除歧义时才附最小片段。
-- 当已有业务域可能覆盖时，不要新建文件。复用 + 略微扩展引言段几乎总是对的。
-- 不要静默解决 fact 冲突。冲突 **必须** 走 `ask_user` —— 由用户决定替换、共存还是加范围门控。
-- 不要在 fact 之间插入 `---` 分隔线。
-- 不要给规则起通用名（`### 规则 1`、`### 备注`）。一句话规则本身就是标题。
-- 主题标题嵌套不要超过 `####`。再深就是业务域切错了 —— 要么折叠、要么拆文件。
-- 单主题只挂 1 条 fact 时不要让它独立成 `##` —— 合并到更宽的主题。
+- In lite mode, do not call `task(type="gen_sql", ...)` — the mode selection already declared no subagent.
+- In deep mode, do not call `task(type="gen_sql", ...)` before confirming `gold_sql` actually runs.
+- In deep mode, do not open a new `gen_sql` session for retries — always pass the previous round's `session_id`.
+- Do not write SQL on behalf of the user's question — that's the subagent's job (deep mode). Your role is orchestrator and knowledge curator.
+- Do not put gold SQL into `./knowledge/*.md`. Knowledge is *atomic facts mined from the gap*, not the answer itself.
+- Do not write derivative facts — anything that mechanically composes from other facts is dropped.
+- Do not write `Derived from` / `Why it matters` / `When it applies` label fields; do not include any question text in the files.
+- Do not attach a SQL example to every fact — only when the one-sentence statement cannot remove ambiguity by itself.
+- When an existing domain can plausibly cover the topic, do not create a new file. Reuse + slightly extending the intro is almost always right.
+- Do not resolve fact conflicts silently. Conflicts **must** go through `ask_user` — the user decides replace / coexist / scope-gate.
+- Do not insert `---` separators between facts.
+- Do not give rules generic names (`### Rule 1`, `### Note`). The one-sentence rule itself is the heading.
+- Topic heading depth must not exceed `####`. Deeper means the domain was sliced wrong — fold the levels or split the file.
+- A single-fact topic must not be its own `##` — merge it into a wider topic.
