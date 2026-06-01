@@ -20,7 +20,6 @@ def get_sql_prompt(
     data_details: List[TableValue],
     metrics: List[Metric],
     question: str,
-    external_knowledge: str = "",
     prompt_version: str = "",
     context=None,
     max_table_schemas_length: int = 4000,
@@ -66,7 +65,6 @@ def get_sql_prompt(
 
     # Add Snowflake specific notes
     database_notes = ""
-    knowledge_content = "" if not external_knowledge else f"External Knowledge:\n{external_knowledge}"
     if database_type.lower() == "snowflake":
         database_notes = (
             "\nEnclose all column names in double quotes to comply with Snowflake syntax requirements and avoid erros. "
@@ -86,7 +84,6 @@ def get_sql_prompt(
         processed_schemas=processed_schemas,
         processed_details=processed_details,
         metrics=processed_metrics,
-        knowledge_content=knowledge_content,
         question=question,
         version=prompt_version,
         processed_context=processed_context,

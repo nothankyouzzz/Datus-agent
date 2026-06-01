@@ -33,8 +33,6 @@ class ToolService:
             "search_reference_sql",
             "get_reference_sql",
             "search_semantic_objects",
-            "search_knowledge",
-            "get_knowledge",
         ]
         for name in context_tool_names:
             method = getattr(self._context_search_tools, name, None)

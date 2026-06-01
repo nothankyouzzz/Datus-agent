@@ -499,7 +499,6 @@ class TestNodeFactory:
                     output_dir="output/test",
                 ),
                 database_type="sqlite",
-                external_knowledge="",
                 prompt_version="",
             )
 

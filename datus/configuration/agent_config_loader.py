@@ -150,7 +150,6 @@ def _bootstrap_agent_config(config_path: Path) -> None:
                     "question_file": "california_schools.csv",
                     "question_id_key": "task_id",
                     "question_key": "question",
-                    "ext_knowledge_key": "evidence",
                     "gold_sql_path": "california_schools.csv",
                     "gold_sql_key": "gold_sql",
                     "gold_result_path": "california_schools.csv",

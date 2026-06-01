@@ -377,7 +377,6 @@ class BenchmarkConfig:
     question_key: str = ""  # The key corresponding to question
     question_id_key: str = ""  # If empty, use the line number
     db_key: str | None = None  # The key corresponding to database name
-    ext_knowledge_key: str | None = None  # The key corresponding to external knowledge
     use_tables_key: str | None = None  # The key corresponding to the table to be used
 
     gold_sql_key: str | None = None  # The key corresponding to gold sql
@@ -1546,7 +1545,6 @@ class AgentConfig:
                 question_id_key="instance_id",
                 question_key="instruction",
                 db_key="db_id",
-                ext_knowledge_key="",
                 gold_sql_path="evaluation_suite/gold/sql",
                 gold_result_path="evaluation_suite/gold/exec_result",
             ),
@@ -1556,7 +1554,6 @@ class AgentConfig:
                 question_id_key="question_id",
                 question_key="question",
                 db_key="db_id",
-                ext_knowledge_key="evidence",
                 gold_sql_path="dev.json",
                 gold_sql_key="SQL",
             ),

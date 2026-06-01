@@ -39,7 +39,6 @@ class OutputNode(Node):
             row_count=sql_context.row_count or 0,
             table_schemas=workflow.context.table_schemas,
             metrics=workflow.context.metrics,
-            external_knowledge=workflow.task.external_knowledge,
             error=sql_context.sql_error,
         )
         self.input = next_input

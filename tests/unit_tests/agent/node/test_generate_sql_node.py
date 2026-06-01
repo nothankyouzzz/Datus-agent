@@ -39,7 +39,6 @@ def make_generate_sql_input():
         data_details=[],
         metrics=[],
         contexts=[],
-        external_knowledge="",
     )
 
 

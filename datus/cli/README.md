@@ -31,7 +31,6 @@ Creating a new SQL task
 Enter task description (): How many schools in merged Alameda have number of test takers less than 100?
 Enter database name (benchmark/bird/dev_20240627/dev_databases/california_schools/california_schools.sqlite): california_schools
 Enter output directory (output): 
-Enter external knowledge (optional) (): 
 ```
 
 2. Table Exploration:
@@ -75,8 +74,7 @@ School,K-12,7-12,P,0.0,37.658212,-122.09713,Carolyn,Hobbs,chobbs@acoe.org,,,,,,,
     ],
     metrics=[],
     input_text='How many schools in merged Alameda have number of test takers less than 100?',
-    contexts=[],
-    external_knowledge=''
+    contexts=[]
 )
 Do you want to execute this node? [y/n] (y): 
 Executing GENERATE_SQL node...

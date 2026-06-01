@@ -42,7 +42,6 @@ class ReasonSQLNode(Node):
             table_schemas=workflow.context.table_schemas,
             data_details=workflow.context.table_values,
             metrics=workflow.context.metrics,
-            external_knowledge=workflow.task.external_knowledge,
             contexts=workflow.context.sql_contexts[-1:] if workflow.context.sql_contexts else [],
         )
         self.input = next_input
@@ -153,7 +152,6 @@ class ReasonSQLNode(Node):
                     "data_details_count": len(self.input.data_details),
                     "metrics_count": len(self.input.metrics),
                     "contexts_count": len(self.input.contexts),
-                    "external_knowledge_available": bool(self.input.external_knowledge),
                 },
                 status=ActionStatus.SUCCESS,
             )

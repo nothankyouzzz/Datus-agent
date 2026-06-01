@@ -64,7 +64,6 @@ class GenerateSQLNode(Node):
             data_details=workflow.context.table_values,
             metrics=workflow.context.metrics,
             contexts=workflow.context.sql_contexts,
-            external_knowledge=workflow.task.external_knowledge,
             database_docs=database_docs,
         )
         self.input = next_input
@@ -168,9 +167,6 @@ class GenerateSQLNode(Node):
                         else 0
                     ),
                     "has_metrics": bool(hasattr(self.input, "metrics") and self.input.metrics),
-                    "has_external_knowledge": bool(
-                        hasattr(self.input, "external_knowledge") and self.input.external_knowledge
-                    ),
                 },
                 status=ActionStatus.PROCESSING,
             )
@@ -251,7 +247,6 @@ def generate_sql(
             data_details=input_data.data_details,
             metrics=input_data.metrics,
             question=input_data.sql_task.task,
-            external_knowledge=input_data.external_knowledge,
             prompt_version=input_data.prompt_version,
             context=[sql_context.to_str() for sql_context in input_data.contexts],
             max_table_schemas_length=input_data.max_table_schemas_length,

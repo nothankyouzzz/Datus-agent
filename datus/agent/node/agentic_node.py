@@ -697,7 +697,6 @@ class AgenticNode(Node):
            ``user_input.plan_mode``.
         2. Shared context parts read from *user_input* via ``getattr``
            (so subclasses with sparser inputs still work):
-           - ``external_knowledge`` → "MUST use these business logic" block
            - DB-context block (dialect + catalog/database/db_schema)
            - ``schemas`` (list of :class:`TableSchema`) → "Available tables"
            - ``metrics`` → "Metrics:" block
@@ -722,10 +721,6 @@ class AgenticNode(Node):
         self._sync_plan_mode_state(user_input)
 
         enhanced_parts: List[str] = []
-
-        ext_know = getattr(user_input, "external_knowledge", "") or ""
-        if ext_know:
-            enhanced_parts.append(f"MUST use these business logic:\n{ext_know}")
 
         db_type = getattr(self.agent_config, "db_type", "") if self.agent_config else ""
         if db_type:
@@ -2298,8 +2293,8 @@ class AgenticNode(Node):
 
             # Compose the user prompt, optionally with a per-run override of
             # ``user_input.user_message`` set during ``_before_stream`` (used
-            # by Compare and GenExtKnowledge to inject node-specific text
-            # without mutating the caller's input object).
+            # by Compare to inject node-specific text without mutating the
+            # caller's input object).
             if ctx.user_message_override is not None:
                 original = self.input.user_message
                 self.input.user_message = ctx.user_message_override
@@ -2484,9 +2479,9 @@ class AgenticNode(Node):
                         candidate = (
                             output.get("content", "") or output.get("response", "") or output.get("raw_output", "")
                         )
-                        # Preserve dict candidates (used by Deliverable / ExtKnowledge
-                        # for structured outputs); coerce only when the candidate is
-                        # a non-empty non-string scalar.
+                        # Preserve dict candidates (used by Deliverable for structured
+                        # outputs); coerce only when the candidate is a non-empty
+                        # non-string scalar.
                         if isinstance(candidate, str):
                             if candidate:
                                 ctx.response_content = candidate
@@ -2535,8 +2530,7 @@ class AgenticNode(Node):
         Default: include ``self.hooks`` (typically a ``GenerationHooks``
         instance for todo/plan workflow nodes) only in interactive mode;
         otherwise return permission hooks alone. This covers SqlSummary,
-        Feedback, GenSemanticModel, GenExtKnowledge, GenMetrics out of the
-        box.
+        Feedback, GenSemanticModel, and GenMetrics out of the box.
 
         Subclasses with non-``self.hooks`` extras (Deliverable's
         ``_validation_hook``) override to call ``self._compose_hooks(extra)``
@@ -2560,9 +2554,8 @@ class AgenticNode(Node):
         """Hook: return a :class:`RetryPolicy` to drive validate/retry.
 
         Default returns :class:`NoRetryPolicy` (single execution). Override
-        to return :class:`ValidationHookRetryPolicy` (deliverable_node.py) /
-        :class:`VerifySqlRetryPolicy` (gen_ext_knowledge_agentic_node.py) when
-        the node needs re-prompting on validation failure. Concrete policies
+        to return :class:`ValidationHookRetryPolicy` when the node needs
+        re-prompting on validation failure. Concrete policies
         live in their owning node's module — there is no shared ``policies/``
         package since each policy is bound to a specific node's internals.
         """

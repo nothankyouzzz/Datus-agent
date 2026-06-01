@@ -112,7 +112,6 @@ class OutputTool(BaseTool):
             sql_query=input_data.gen_sql,
             sql_execution_result=input_data.sql_result,
             metrics=input_data.metrics,
-            external_knowledge=input_data.external_knowledge,
             prompt_version=input_data.prompt_version,
             agent_config=self.agent_config,
         )

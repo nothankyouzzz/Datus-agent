@@ -145,7 +145,6 @@ class CompareAgenticNode(AgenticNode):
             database_type=input_data.sql_task.database_type,
             database_name=input_data.sql_task.database_name,
             sql_task=input_data.sql_task.task,
-            external_knowledge=input_data.sql_task.external_knowledge,
             sql_query=sql_query,
             sql_explanation=sql_explanation,
             sql_result=sql_result,

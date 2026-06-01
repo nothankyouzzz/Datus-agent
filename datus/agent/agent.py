@@ -19,8 +19,6 @@ from datus.models.base import LLMBaseModel
 from datus.schemas.action_history import ActionHistory, ActionHistoryManager
 from datus.schemas.batch_events import BatchEvent, BatchStage
 from datus.schemas.node_models import SqlTask
-from datus.storage.ext_knowledge.ext_knowledge_init import init_ext_knowledge, init_success_story_knowledge
-from datus.storage.ext_knowledge.store import ExtKnowledgeRAG
 from datus.storage.metric.metric_init import init_semantic_yaml_metrics, init_success_story_metrics
 from datus.storage.metric.store import MetricRAG
 from datus.storage.schema_metadata import SchemaWithValueRAG
@@ -543,48 +541,6 @@ class Agent:
                 else:
                     result = {"status": "failed", "message": error_message}
                 return result
-            elif component == "ext_knowledge":
-                if kb_update_strategy == "overwrite":
-                    # Also clear the ext_knowledge directory
-                    ext_knowledge_dir = self.global_config.path_manager.ext_knowledge_path()
-                    force = self._force_delete
-                    if ext_knowledge_dir.exists() and not safe_rmtree(
-                        ext_knowledge_dir, "external knowledge directory", force=force
-                    ):
-                        return {
-                            "status": "cancelled",
-                            "message": "User cancelled deletion of external knowledge directory",
-                        }
-                    self.global_config.save_storage_config("ext_knowledge")
-                else:
-                    self.global_config.check_init_storage_config("ext_knowledge")
-                self.ext_knowledge_rag = ExtKnowledgeRAG(self.global_config)
-                if kb_update_strategy == "overwrite":
-                    self.ext_knowledge_rag.truncate()
-                # Initialize ext_knowledge using appropriate method
-                if hasattr(self.args, "ext_knowledge") and self.args.ext_knowledge:
-                    # Use CSV file directly
-                    init_ext_knowledge(
-                        self.ext_knowledge_rag.store,
-                        self.args.ext_knowledge,
-                        build_mode=kb_update_strategy,
-                        pool_size=pool_size,
-                    )
-                elif hasattr(self.args, "success_story") and self.args.success_story:
-                    # Use GenExtKnowledgeAgenticNode to generate from success story
-                    successful, error_message = init_success_story_knowledge(
-                        self.global_config, self.args.success_story, subject_tree
-                    )
-                    if not successful:
-                        return {
-                            "status": "failed",
-                            "message": error_message,
-                        }
-                return {
-                    "status": "success",
-                    "message": f"ext_knowledge bootstrap completed, "
-                    f"knowledge_size={self.ext_knowledge_rag.store.table_size()}",
-                }
             elif component == "reference_sql":
                 if kb_update_strategy == "overwrite":
                     # Also clear the sql_summaries directory (YAML files)
@@ -739,11 +695,6 @@ class Agent:
                         output_dir=output_dir,
                         current_date=self.args.current_date,
                         tables=use_tables,
-                        external_knowledge=(
-                            ""
-                            if not benchmark_config.ext_knowledge_key
-                            else task_item.get(benchmark_config.ext_knowledge_key, "")
-                        ),
                         schema_linking_type="full",
                     ),
                     check_storage=False,
@@ -799,9 +750,6 @@ class Agent:
                 logger.debug(f"line {line_no}: {row}")
                 if "question" in row and "sql" in row and row["question"].strip() and row["sql"].strip():
                     task_data = {"question_id": line_no, "question": row["question"].strip(), "sql": row["sql"].strip()}
-                    # Check if ext_knowledge column exists and add it to task data
-                    if "external_knowledge" in row and row["external_knowledge"].strip():
-                        task_data["external_knowledge"] = row["external_knowledge"].strip()
                     tasks.append(task_data)
 
         logger.info(f"Loaded {len(tasks)} tasks from semantic_layer benchmark")
@@ -814,8 +762,6 @@ class Agent:
             question = task["question"]
             logger.info(f"start benchmark with {task_id}: {question}")
             current_db_config = self.global_config.current_db_config()
-
-            combined_ext_knowledge = task.get("external_knowledge", "") or ""
 
             # Use hierarchical save directory structure
             output_dir = self.global_config.get_save_run_dir(run_id) if run_id else self.global_config.output_dir
@@ -830,7 +776,6 @@ class Agent:
                     schema_name=current_db_config.schema,
                     subject_path=subject_path,
                     output_dir=output_dir,
-                    external_knowledge=combined_ext_knowledge,
                     current_date=self.args.current_date,
                 ),
                 run_id=run_id,

@@ -47,7 +47,6 @@ async def reasoning_sql_with_mcp_stream(
         max_context_length=input_data.max_context_length,
         max_value_length=input_data.max_value_length,
         max_text_mark_length=input_data.max_text_mark_length,
-        knowledge_content=input_data.external_knowledge,
         agent_config=agent_config,
     )
 
@@ -167,7 +166,6 @@ def reasoning_sql_with_mcp(
         max_context_length=input_data.max_context_length,
         max_value_length=input_data.max_value_length,
         max_text_mark_length=input_data.max_text_mark_length,
-        knowledge_content=input_data.external_knowledge,
         agent_config=agent_config,
     )
     try:

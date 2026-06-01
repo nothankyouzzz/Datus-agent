@@ -131,7 +131,7 @@ def pytest_collection_modifyitems(items):
     """Automatically mark all tests under integration/ with the 'integration' marker.
 
     Also reorder gen_* agent tests to respect logical dependencies:
-    semantic_model → metrics → ext_knowledge
+    semantic_model → metrics
     (metrics reference measures defined in semantic models)
     """
     for item in items:
@@ -142,7 +142,6 @@ def pytest_collection_modifyitems(items):
     gen_test_order = {
         "test_gen_semantic_model_agentic": 0,
         "test_gen_metrics_agentic": 1,
-        "test_gen_ext_knowledge_agentic": 2,
     }
 
     gen_items = [(i, item) for i, item in enumerate(items) if item.fspath.purebasename in gen_test_order]
