@@ -273,7 +273,8 @@ def cleanup_sub_agent_data(nightly_agent_config):
             if safe_base not in sub_agent_dir.parents:
                 pytest.fail(f"Refusing to rmtree outside test data tree: {sub_agent_dir}")
             if sub_agent_dir.exists():
-                shutil.rmtree(sub_agent_dir, ignore_errors=True)  # audit-noqa: rmtree_outside_tmp — path asserted under TESTS_ROOT/data above
+                # safe: dir is asserted under TESTS_ROOT/data above
+                shutil.rmtree(sub_agent_dir, ignore_errors=True)  # audit-noqa: rmtree_outside_tmp
 
     _cleanup()
     yield
