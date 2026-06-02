@@ -111,6 +111,11 @@ def log(msg: str) -> None:
 
 
 TEST_CMD_TIMEOUT = int(os.environ.get("TEST_CMD_TIMEOUT", "1800"))
+# Run pytest suites in parallel by default (matches the merge-queue harness). A
+# broad diff (for example a top-level datus/ change) can select the whole unit
+# suite as the impacted target; running it serially under coverage blows the
+# TEST_CMD_TIMEOUT budget. Set PYTEST_XDIST_WORKERS=0 to force serial execution.
+PYTEST_XDIST_WORKERS = os.environ.get("PYTEST_XDIST_WORKERS", "auto")
 GIT_CMD_TIMEOUT = int(os.environ.get("GIT_CMD_TIMEOUT", "60"))
 DIFF_COVER_TIMEOUT = int(os.environ.get("DIFF_COVER_TIMEOUT", "300"))
 _COMPARE_BRANCH_CACHE: dict[str, str | None] = {}
@@ -296,6 +301,10 @@ def _build_pytest_command(
         "pytest",
         *targets,
     ]
+    if PYTEST_XDIST_WORKERS and PYTEST_XDIST_WORKERS != "0":
+        # loadscope keeps a module/class on one worker so module-scoped fixtures
+        # and coverage collection stay correct under parallel execution.
+        cmd.extend(["-n", PYTEST_XDIST_WORKERS, "--dist=loadscope"])
     if basetemp:
         cmd.append(f"--basetemp={basetemp}")
 

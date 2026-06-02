@@ -263,9 +263,15 @@ def cleanup_sub_agent_data(nightly_agent_config):
     after each test run.
     """
 
+    # Confine deletions to the test data tree so a misconfigured/empty
+    # rag_base_path can never resolve rmtree onto real user data.
+    safe_base = (TESTS_ROOT / "data").resolve()
+
     def _cleanup():
         for name in NIGHTLY_SUB_AGENT_NAMES:
-            sub_agent_dir = Path(nightly_agent_config.rag_base_path) / "sub_agents" / name
+            sub_agent_dir = (Path(nightly_agent_config.rag_base_path) / "sub_agents" / name).resolve()
+            if safe_base not in sub_agent_dir.parents:
+                pytest.fail(f"Refusing to rmtree outside test data tree: {sub_agent_dir}")
             if sub_agent_dir.exists():
                 shutil.rmtree(sub_agent_dir, ignore_errors=True)
 

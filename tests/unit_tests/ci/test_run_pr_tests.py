@@ -81,6 +81,34 @@ def test_select_impacted_unit_tests_maps_non_python_files_to_parent_directory():
     ]
 
 
+def test_build_pytest_command_runs_in_parallel_by_default(monkeypatch):
+    monkeypatch.setattr(run_pr_tests, "PYTEST_XDIST_WORKERS", "auto")
+
+    cmd = run_pr_tests._build_pytest_command(["tests/unit_tests/"], "out.xml")
+
+    assert "-n" in cmd
+    assert cmd[cmd.index("-n") + 1] == "auto"
+    assert "--dist=loadscope" in cmd
+
+
+def test_build_pytest_command_serial_when_workers_disabled(monkeypatch):
+    monkeypatch.setattr(run_pr_tests, "PYTEST_XDIST_WORKERS", "0")
+
+    cmd = run_pr_tests._build_pytest_command(["tests/unit_tests/"], "out.xml")
+
+    assert "-n" not in cmd
+    assert "--dist=loadscope" not in cmd
+
+
+def test_build_pytest_command_honors_custom_worker_count(monkeypatch):
+    monkeypatch.setattr(run_pr_tests, "PYTEST_XDIST_WORKERS", "4")
+
+    cmd = run_pr_tests._build_pytest_command(["tests/unit_tests/"], "out.xml")
+
+    assert cmd[cmd.index("-n") + 1] == "4"
+    assert "--dist=loadscope" in cmd
+
+
 def test_filter_existing_paths_drops_missing_files(tmp_path):
     real_dir = tmp_path / "real_dir"
     real_dir.mkdir()
