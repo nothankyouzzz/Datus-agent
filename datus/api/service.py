@@ -112,6 +112,7 @@ class DatusAPIService:
     def _create_sql_task(self, request: RunWorkflowRequest, task_id: str, agent: Agent) -> SqlTask:
         """Create SQL task from request parameters."""
         subject_path = request.subject_path
+        external_knowledge = request.ext_knowledge or ""
 
         return SqlTask(
             id=task_id,
@@ -120,6 +121,7 @@ class DatusAPIService:
             database_name=request.database_name or "default",
             schema_name=request.schema_name or "",
             subject_path=subject_path or [],
+            external_knowledge=external_knowledge,
             output_dir=agent.global_config.output_dir,
             current_date=request.current_date,
         )

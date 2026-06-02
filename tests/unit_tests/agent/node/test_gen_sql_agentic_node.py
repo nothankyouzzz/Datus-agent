@@ -1924,6 +1924,7 @@ class TestSetupInputGenSQL:
 
         wf = MagicMock()
         wf.task.task = "Find total sales"
+        wf.task.external_knowledge = ""
         wf.task.catalog_name = "cat"
         wf.task.database_name = "california_schools"
         wf.task.schema_name = "main"
@@ -1944,6 +1945,7 @@ class TestSetupInputGenSQL:
 
         wf = MagicMock()
         wf.task.task = "new message"
+        wf.task.external_knowledge = ""
         wf.task.catalog_name = ""
         wf.task.database_name = "california_schools"
         wf.task.schema_name = ""
@@ -1963,6 +1965,7 @@ class TestSetupInputGenSQL:
 
         wf = MagicMock()
         wf.task.task = "query"
+        wf.task.external_knowledge = ""
         wf.task.catalog_name = ""
         wf.task.database_name = "california_schools"
         wf.task.schema_name = ""

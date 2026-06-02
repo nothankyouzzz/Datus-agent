@@ -169,6 +169,7 @@ class GenSQLAgenticNode(AgenticNode):
             logger.debug(f"creating GenSQLNodeInput: {self.input}")
             self.input = GenSQLNodeInput(
                 user_message=workflow.task.task,
+                external_knowledge=workflow.task.external_knowledge,
                 catalog=workflow.task.catalog_name,
                 database=workflow.task.database_name,
                 db_schema=workflow.task.schema_name,
@@ -181,6 +182,7 @@ class GenSQLAgenticNode(AgenticNode):
         else:
             # Update existing input with workflow data
             self.input.user_message = workflow.task.task
+            self.input.external_knowledge = workflow.task.external_knowledge
             self.input.catalog = workflow.task.catalog_name
             self.input.database = workflow.task.database_name
             self.input.db_schema = workflow.task.schema_name

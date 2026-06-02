@@ -30,6 +30,7 @@ def get_compare_prompt(
         database_type=sql_task.database_type,
         database_name=sql_task.database_name,
         sql_task=sql_task.task,
+        external_knowledge=sql_task.external_knowledge,
         sql_query=sql_query,
         sql_explanation=sql_explanation,
         sql_result=sql_result,

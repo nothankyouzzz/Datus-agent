@@ -697,6 +697,7 @@ class AgenticNode(Node):
            ``user_input.plan_mode``.
         2. Shared context parts read from *user_input* via ``getattr``
            (so subclasses with sparser inputs still work):
+           - ``external_knowledge`` → "MUST use these business logic" block
            - DB-context block (dialect + catalog/database/db_schema)
            - ``schemas`` (list of :class:`TableSchema`) → "Available tables"
            - ``metrics`` → "Metrics:" block
@@ -721,6 +722,10 @@ class AgenticNode(Node):
         self._sync_plan_mode_state(user_input)
 
         enhanced_parts: List[str] = []
+
+        ext_know = getattr(user_input, "external_knowledge", "") or ""
+        if ext_know:
+            enhanced_parts.append(f"MUST use these business logic:\n{ext_know}")
 
         db_type = getattr(self.agent_config, "db_type", "") if self.agent_config else ""
         if db_type:

@@ -695,6 +695,11 @@ class Agent:
                         output_dir=output_dir,
                         current_date=self.args.current_date,
                         tables=use_tables,
+                        external_knowledge=(
+                            ""
+                            if not benchmark_config.ext_knowledge_key
+                            else task_item.get(benchmark_config.ext_knowledge_key, "")
+                        ),
                         schema_linking_type="full",
                     ),
                     check_storage=False,
@@ -750,6 +755,9 @@ class Agent:
                 logger.debug(f"line {line_no}: {row}")
                 if "question" in row and "sql" in row and row["question"].strip() and row["sql"].strip():
                     task_data = {"question_id": line_no, "question": row["question"].strip(), "sql": row["sql"].strip()}
+                    # Check if ext_knowledge column exists and add it to task data
+                    if "external_knowledge" in row and row["external_knowledge"].strip():
+                        task_data["external_knowledge"] = row["external_knowledge"].strip()
                     tasks.append(task_data)
 
         logger.info(f"Loaded {len(tasks)} tasks from semantic_layer benchmark")
@@ -762,6 +770,8 @@ class Agent:
             question = task["question"]
             logger.info(f"start benchmark with {task_id}: {question}")
             current_db_config = self.global_config.current_db_config()
+
+            combined_ext_knowledge = task.get("external_knowledge", "") or ""
 
             # Use hierarchical save directory structure
             output_dir = self.global_config.get_save_run_dir(run_id) if run_id else self.global_config.output_dir
@@ -776,6 +786,7 @@ class Agent:
                     schema_name=current_db_config.schema,
                     subject_path=subject_path,
                     output_dir=output_dir,
+                    external_knowledge=combined_ext_knowledge,
                     current_date=self.args.current_date,
                 ),
                 run_id=run_id,

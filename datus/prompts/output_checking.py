@@ -17,6 +17,7 @@ def gen_prompt(
     sql_execution_result: str,
     metrics: List[Metric] = None,
     dialect: str = DBType.SQLITE,
+    external_knowledge: str = "",
     prompt_version: str = "",
     agent_config: Optional[Any] = None,
 ) -> List[Dict[str, str]]:
@@ -34,6 +35,9 @@ def gen_prompt(
     """
     if metrics is None:
         metrics = []
+
+    if external_knowledge:
+        external_knowledge = f"### External Knowledge:\n{external_knowledge}"
 
     if not metrics:
         metrics_str = ""
@@ -56,6 +60,7 @@ def gen_prompt(
         dialect=dialect,
         user_question=user_question,
         table_schemas=table_schemas_str,
+        external_knowledge=external_knowledge,
         metrics=metrics_str,
         sql_query=sql_query,
         sql_execution_result=sql_execution_result,

@@ -65,6 +65,7 @@ def _make_workflow():
     wf.task.id = "task_1"
     wf.task.database_name = "test_db"
     wf.task.output_dir = "output"
+    wf.task.external_knowledge = ""
     wf.context.table_schemas = []
     wf.context.metrics = []
     sql_ctx = MagicMock()
