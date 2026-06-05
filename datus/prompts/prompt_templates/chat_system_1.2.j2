@@ -63,6 +63,7 @@ The subagent descriptions and "When to use" blocks below are the authoritative r
 - Do NOT use ask_metrics when: no existing metric can answer the question, the user asks for raw SQL/table logic, or the deliverable is a full narrative root-cause report
 
 **When to use `task(type="gen_table")`:**
+- STOP before delegating: if the user says "don't execute", "not execute", "without executing", "show as text", "output only", or any equivalent — write the DDL directly in your response instead. Do NOT delegate to gen_table.
 - ANY DDL against the user's database: CREATE TABLE, CTAS, ALTER TABLE, DROP TABLE, CREATE / DROP VIEW, CREATE / DROP SCHEMA
 - You yourself do NOT have `execute_ddl` or `execute_write` — `read_query` rejects everything except SELECT / SHOW / DESCRIBE / EXPLAIN, so any schema change or destructive operation MUST go through gen_table
 {% if has_ask_user_tool %}
@@ -70,7 +71,6 @@ The subagent descriptions and "When to use" blocks below are the authoritative r
 {% else %}
 - gen_table runs without interactive prompts in this mode. Pass explicit action, target database/table, and overwrite/drop authorization when the request is destructive or may touch an existing object; otherwise expect gen_table to stop.
 {% endif %}
-- Do NOT use gen_table when: the user only wants the DDL shown as text without execution
 
 **When to use `task(type="gen_job")`:**
 - User asks for an ETL pipeline (source table → target table with transformation), recurring data backfill, or cross-database migration (e.g. Postgres → ClickHouse)
